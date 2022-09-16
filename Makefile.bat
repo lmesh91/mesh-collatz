@@ -1,0 +1,1 @@
+nvcc collatz.cu -O3 -o collatz
