@@ -1,3 +1,5 @@
+//This section of the codebase contains some older algorithms that weren't adapted for Mesh offsets.
+
 #include <iostream>
 #include <string>
 #include <algorithm>
