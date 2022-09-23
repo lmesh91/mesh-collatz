@@ -410,6 +410,158 @@ void meshColGPUShortcut(long long *c, long long minN, long long maxN, int meshOf
         }
     }
 }
+/*
+ * This is the kernel for finding all cycles under a certain size in the Mesh-Collatz sequence.
+ * Arguments:
+ * c <array of longs> - a blank array to add the lowest values of cycles to
+ * c_size <array of longs> - a blank array where the size of c will be printed to, and misc information
+ * minN <long> - the smallest value of |n| to test
+ * maxN <long> - the largest value of |n| to test
+ * meshOffset <int> - the Mesh offset to test
+ */
+__global__
+void meshColGPUCycleSearch(long long *c, long long *c_size, long long minN, long long maxN, int meshOffset) {
+    //This time, *c stores the list of cycle values.
+    //c_size[1] -> Where to add the next cycle
+    //c_size[2] and [3] -> min and max search values
+    long long *d; //D is the same thing on a thread scale
+    long long temp = 0;
+    d = &temp;
+    int d_index = 0;
+    if (threadIdx.x + blockIdx.x == 0) c_size[1] = 0;
+    __syncthreads();
+    for (long long i = minN+threadIdx.x+blockIdx.x*blockDim.x; i <= maxN; i+=blockDim.x*gridDim.x) {
+        int sign = 1;
+        loopStartCycle: long long x = sign * i; //Using a label here will cause the loop to go through x and -x.
+        if (x == 0) printf(""); //This is needed for the program to work
+        long long startX = i; //sign doesn't matter
+        long long history[8192];
+        history[0] = x;
+        int historyVal = 1;
+        while (true) { //The only way to exit the loop is through a goto
+            if (startX > ((x > 0) ? x : -x)) goto endOfLoopCycle;
+            if (c_size[1] == 0) {
+                if (c_size[2] <= x & x <= c_size[3]) {
+                    for (int i = 0; i < c_size[1] - 1; i++) {
+                        if (c[i] == x) goto endOfLoopCycle;
+                    }
+                }
+            }
+            if (historyVal == 8192) {
+                for (int i = 8190; i >= 0; i--) {
+                    if (history[i] == x) {
+                        long long minValue = x;
+                        long long minValueAbs = (minValue > 0) ? minValue : -minValue;
+                        for (int j = i; j <= 8191; j++) {
+                            if (minValueAbs > ((history[j] > 0) ? history[j] : -history[j])) {
+                                minValue = history[j];
+                                minValueAbs = (minValue > 0) ? minValue : -minValue;
+                            }
+                        }
+                        c[c_size[1]] = minValue; c_size[1]++;
+                        *(d + d_index) = minValue; d_index++;
+                        if (c_size[1] == 1) {
+                            c_size[2] = minValue;
+                            c_size[3] = minValue;
+                            goto endOfLoopCycle;
+                        }
+                        if (minValue < c_size[2]) c_size[2] = minValue;
+                        if (minValue > c_size[3]) c_size[3] = minValue;
+                        goto endOfLoopCycle;
+                    }
+                }
+            }
+            if (x % 2) {
+                x *= 3; x++;
+            }
+            x >>= 1; x += meshOffset; //Just a more optimized version to execute this part
+            history[historyVal] = x; ++historyVal;
+        }
+        endOfLoopCycle:;
+        if (sign * i > 0) { //This will go back to the beginning when sign = 1 and i is nonzero
+            sign = -1;
+            goto loopStartCycle;
+        }
+    }
+    //Last check to see if c was overwritten...
+    for (int inc = 0; inc < 5; inc++) { //multiple checks just in case
+    for (int i = 0; i < d_index; i++) {
+        bool cycleIncluded = false;
+        for (int j = 0; j < c_size[1]; j++) {
+            if (c[j] == d[i]) {
+                cycleIncluded = true; break;
+            }
+        }
+        if (!cycleIncluded) {
+            c[c_size[1]] = d[i];
+            c_size[1]++;
+        }
+    }
+    };
+    __syncthreads();
+    if (threadIdx.x+blockIdx.x==0) {
+        c_size[0] = c_size[1];
+        for (int i = 0; i < c_size[0]; i++) {
+            for (int j = 0; j < i; j++) {
+                if (c[i] == c[j]) {
+                    for (int k = i + 1; k < c_size[0]; k++) {
+                        c[k-1] = c[k];
+                    }
+                    c_size[0]--;
+                    j--;
+                    if (i >= c_size[0]) break;
+                }
+            }
+        }
+        for (int i = 0; i < c_size[0]; i++) {
+            printf("%lld,",c[i]);
+        }
+        printf("\n");
+    }
+}
+/*
+ * This is the function for finding all of the cycles of a Mesh-Collatz sequence under a certain size.
+ * Arguments:
+ * N <long> - the number to test up to (by absolute value)
+ * blocks <int> - the number of CUDA blocks to use
+ * threads <int> - the number of CUDA threads to use in each block
+ * meshOffset <int> - the Mesh offset to use
+ */
+long long* meshColCycleSearch(long long N, int blocks, int threads, int meshOffset) {
+    cudaEvent_t start, stop; //Add CUDA events for benchmarking
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    long long *c; //Initializing our c array
+    cudaMallocManaged(&c, sizeof(long long)*1000000);
+
+    long long *c_size; //This will show the size so we can turn it into a normal array later.
+    cudaMallocManaged(&c_size, sizeof(int)*4);
+
+    
+    cudaEventRecord(start);
+    meshColGPUCycleSearch<<<blocks, threads>>>(c, c_size, 0, N, meshOffset);
+    cudaEventRecord(stop);
+
+    cudaDeviceSynchronize();
+    cudaEventSynchronize(stop); //Wait for everything to finish
+
+    long long* cycles = 0;
+    cycles = &c_size[0]; //the first value gives the array size
+    for (int i = 0; i < c_size[0]; i++) {
+        *(cycles + (i + 1)) = c[i];
+    }
+
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+    std::cout << "Elapsed time: " << std::to_string(milliseconds) << "ms" << std::endl;
+    std::cout << "Cycles found: " << std::to_string(c_size[0]) << std::endl;
+    
+    
+    cudaFree(c);
+    cudaFree(c_size); //Free memory
+    return cycles;
+}
 
 /*
  * This is the function for running a Mesh-Collatz sequence with the traditional algorithm. Currently hardcoded for m = 0.
@@ -462,8 +614,13 @@ float meshColShortcut(long long N, int blocks, int threads) {
 }
 int main() {
     //Right now this just runs a benchmark of all numbers up to +/- 10B
-    std::cout << "Mesh-Collatz Searcher v0.1.2\nRunning Benchmark..." << std::endl;
+    std::cout << "Mesh-Collatz Searcher v0.1.3\nRunning Benchmark..." << std::endl;
     long long N = 10000000000LL;
+    printf("Cycle Testing\n");
+    for (int i = -100; i <= 100; i++) {
+        printf("m=%i\n", i);
+        meshColCycleSearch(100000+100000*(i > 0 ? i : -i), 512, 512, i);
+    }
     printf("No Sieve - Mesh\n");
     meshColShortcut(N, 512, 512);
     printf("2^16 Sieve - Mesh\n"); //For now a 2^16 sieve seems the fastest. This will have to be benchmarked later for every Mesh offset
