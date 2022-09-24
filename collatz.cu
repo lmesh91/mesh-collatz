@@ -420,16 +420,11 @@ void meshColGPUShortcut(long long *c, long long minN, long long maxN, int meshOf
  * meshOffset <int> - the Mesh offset to test
  */
 __global__
-void meshColGPUCycleSearch(long long *c, long long *c_size, long long minN, long long maxN, int meshOffset) {
+void meshColGPUCycleSearch(long long *c, long long *c_size, char *d_index, long long minN, long long maxN, int meshOffset) {
     //This time, *c stores the list of cycle values.
     //c_size[1] -> Where to add the next cycle
     //c_size[2] and [3] -> min and max search values
-    long long *d; //D is the same thing on a thread scale
-    long long temp = 0;
-    d = &temp;
     const int D_SIZE = 16;
-    int d_index = 0;
-    if (threadIdx.x + blockIdx.x == 0) c_size[1] = 0;
     __syncthreads();
     for (long long i = minN+threadIdx.x+blockIdx.x*blockDim.x; i <= maxN; i+=blockDim.x*gridDim.x) {
         int sign = 1;
@@ -441,36 +436,21 @@ void meshColGPUCycleSearch(long long *c, long long *c_size, long long minN, long
         int historyVal = 1;
         while (true) { //The only way to exit the loop is through a goto
             if (startX > ((x > 0) ? x : -x)) goto endOfLoopCycle; //|x| < |x_orig|
-            if (c_size[1] > 0) { //Is this a cycle we've already had? (brute-force search)
-                if (c_size[2] <= x & x <= c_size[3]) {
-                    for (int i = 0; i < c_size[1] - 1; i++) {
-                        if (c[i] == x) goto endOfLoopCycle;
-                    }
-                }
-            }
             if (historyVal == 8192) { //Is the history array full? We've probably reached a cycle...
-                for (int i = 8190; i >= 0; i--) {
-                    if (history[i] == x) {
+                for (int z = 8190; z >= 0; z--) {
+                    if (history[z] == x) {
                         long long minValue = x; //Finding the minimum value of the array
                         long long minValueAbs = (minValue > 0) ? minValue : -minValue;
-                        for (int j = i; j <= 8191; j++) {
+                        for (int j = z; j <= 8191; j++) {
                             if (minValueAbs > ((history[j] > 0) ? history[j] : -history[j])) {
                                 minValue = history[j];
                                 minValueAbs = (minValue > 0) ? minValue : -minValue;
                             }
                         }
-                        *(d + D_SIZE*(threadIdx.x + blockIdx.x * blockDim.x) + d_index) = minValue; d_index++; //Add it to the thread-only D array
-                        c[c_size[1]] = minValue; c_size[1]++; //add it to the C array and find min/max value
-                        if (c_size[1] == 1) {
-                            c_size[2] = minValue;
-                            c_size[3] = minValue;
-                            goto endOfLoopCycle;
-                        }
-                        if (minValue < c_size[2]) c_size[2] = minValue;
-                        if (minValue > c_size[3]) c_size[3] = minValue;
+                        c[D_SIZE*(threadIdx.x + blockIdx.x * blockDim.x) + d_index[threadIdx.x + blockIdx.x * blockDim.x]] = minValue; d_index[threadIdx.x + blockIdx.x * blockDim.x]++; //Add it to the thread-only D array
                         goto endOfLoopCycle;
                     }
-                    if (i == 0) {
+                    if (z == 0) {
                         printf("Long cycle in m = %i, x = %lld", meshOffset, startX);
                     }
                 }
@@ -487,24 +467,15 @@ void meshColGPUCycleSearch(long long *c, long long *c_size, long long minN, long
             goto loopStartCycle;
         }
     }
-    //Last check to see if c was overwritten...
-    for (int inc = 0; inc < 25000; inc++) { //multiple checks just in case
-    for (int i = 0; i < d_index; i++) {
-        bool cycleIncluded = false;
-        for (int j = 0; j < c_size[1]; j++) {
-            if (c[j] == *(d + D_SIZE*(threadIdx.x + blockIdx.x * blockDim.x) + i)) {
-                cycleIncluded = true; break;
-            }
-        }
-        if (!cycleIncluded) {
-            printf("%lld ", *(d + D_SIZE*(threadIdx.x + blockIdx.x * blockDim.x) + i));
-            c[c_size[1]+threadIdx.x] = *(d + D_SIZE*(threadIdx.x + blockIdx.x * blockDim.x) + i);
-            c_size[1]+=threadIdx.x+1;
-        }
-    }
-    };
     __syncthreads();
-    if (threadIdx.x+blockIdx.x==0) { //This part removes any duplicate cycles that made it into the C array
+    //Replace C with an array containing all of the stuff in the D arrays.
+    c_size[1] = blockDim.x*gridDim.x*D_SIZE;
+    for (int i = d_index[threadIdx.x + blockIdx.x * blockDim.x]; i < D_SIZE; i++) {
+        c[D_SIZE*(threadIdx.x + blockIdx.x * blockDim.x) + i] = -9223372036854775807LL;
+    }
+    __syncthreads();
+    c_size[0] = c_size[1];
+    /*if (threadIdx.x+blockIdx.x==0) { //This part removes any duplicate cycles that made it into the C array
         printf("OK!");
         c_size[0] = c_size[1];
         for (int i = 0; i < c_size[0]; i++) {
@@ -519,7 +490,7 @@ void meshColGPUCycleSearch(long long *c, long long *c_size, long long minN, long
                 }
             }
         }
-    }
+    }*/
 }
 /*
  * This is the function for finding all of the cycles of a Mesh-Collatz sequence under a certain size.
@@ -536,21 +507,52 @@ long long* meshColCycleSearch(long long* cycles, long long N, int blocks, int th
     cudaEventCreate(&stop);
 
     long long *c; //Initializing our c array
-    cudaMallocManaged(&c, sizeof(long long)*1000000);
+    cudaMallocManaged(&c, sizeof(long long)*16*512*512);
 
     long long *c_size; //This will show the size so we can turn it into a normal array later.
     cudaMallocManaged(&c_size, sizeof(int)*4);
 
+    char *d_index;
+    cudaMallocManaged(&d_index, sizeof(char)*blocks*threads);
+    for (int i = 0; i < blocks*threads; i++) {
+        d_index[i] = 0;
+    }
+
     
     cudaEventRecord(start);
-    meshColGPUCycleSearch<<<blocks, threads>>>(c, c_size, 0, N, meshOffset);
+    meshColGPUCycleSearch<<<blocks, threads>>>(c, c_size, d_index, 0, N, meshOffset);
     cudaEventRecord(stop);
 
     cudaDeviceSynchronize();
     cudaEventSynchronize(stop); //Wait for everything to finish
 
-    *cycles = c_size[0]; //the first value gives the array size
-    for (int i = 0; i < c_size[0]; i++) {
+    //Post-Processing Part 1: Clear out null values.
+    int newPos = 0;
+    for (int curPos = 0; curPos < c_size[0]; curPos++) {
+        if (c[curPos] == -9223372036854775807LL) {
+            continue;
+        } else {
+            c[newPos] = c[curPos];
+            newPos++;
+        }
+    }
+    //Post-Processing Part 2: Clear out duplicates.
+    std::sort(c, c + newPos);
+    for (int i = 0; i < newPos; i++) {
+        for (int j = 0; j < i; j++) {
+            if (c[i] == c[j]) {
+                for (int k = i + 1; k < newPos; k++) {
+                    c[k-1] = c[k];
+                }
+                newPos--;
+                j--;
+                if (i >= newPos) break;
+            }
+        }
+    }
+    
+    *cycles = newPos; //the first value gives the array size
+    for (int i = 0; i < newPos; i++) {
         *(cycles + (i + 1)) = c[i];
     }
 
@@ -561,6 +563,7 @@ long long* meshColCycleSearch(long long* cycles, long long N, int blocks, int th
     
     
     cudaFree(c);
+    cudaFree(d_index);
     cudaFree(c_size); //Free memory
     return cycles;
 }
@@ -616,10 +619,10 @@ float meshColShortcut(long long N, int blocks, int threads) {
 }
 int main() {
     //Right now this just runs a benchmark of all numbers up to +/- 10B
-    std::cout << "Mesh-Collatz Searcher v0.1.3\nRunning Benchmark..." << std::endl;
+    std::cout << "Mesh-Collatz Searcher v0.1.4\nRunning Benchmark..." << std::endl;
     long long N = 10000000000LL;
     printf("Cycle Testing\n");
-    cycleTesting: int i = -117;
+    int i = 0;
     long long maxNumCycles = 0;
     long long maxCycleStart = 0;
     double maxCycleWeight = 0;
@@ -634,13 +637,13 @@ int main() {
         }
         for (int j = 1; j <= numCycles; j++) {
             long long cycleVal = *(results+j);
-            double cycleWeight = cycleVal / (double)(4*i+1);
+            double cycleWeight = (cycleVal - 2*i) / (double)(4*i+1);
             if (std::abs(cycleVal) > maxCycleStart) {
-                //printf("Record cycle start: %lld in m = %i\n", *(results+j), i);
+                printf("Record cycle start: %lld in m = %i\n", *(results+j), i);
                 maxCycleStart = std::abs(cycleVal);
             }
             if (std::abs(cycleWeight) > maxCycleWeight) {
-                //printf("Record cycle weight: %f in m = %i\n", *(results+j)/(double)(4*i+1), i);
+                printf("Record cycle weight: %f in m = %i\n", (*(results+j)-2*i)/(double)(4*i+1), i);
                 maxCycleWeight = std::abs(cycleWeight);
             }
         }
@@ -649,7 +652,6 @@ int main() {
         } else {
             i *= -1;
         }
-        goto cycleTesting;
     }
     printf("No Sieve - Mesh\n");
     meshColShortcut(N, 512, 512);
