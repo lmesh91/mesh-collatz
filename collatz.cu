@@ -610,7 +610,7 @@ float meshColShortcut(long long minN, long long maxN, int meshOffset, int blocks
 }
 int main(int argc, char* argv[]) {
     //Right now this just runs a benchmark of all numbers up to +/- 10B
-    printf("Mesh-Collatz Searcher v0.2.0\n");
+    printf("Mesh-Collatz Searcher v0.2.1\n");
     //Initializing some vars to be taken in by the arguments
     std::string executionType = "";
     int meshMin = 0;
@@ -620,7 +620,7 @@ int main(int argc, char* argv[]) {
     long long maxTestVal = 0;
     int sieveSize = 16;
     for (int i = 0; i < argc; i++) { //Argument interpreter - pretty self explanatory
-        if (!strcmp(argv[i],"-h")) printf("Help for Mesh-Collatz Searcher:\n\n-h  Prints this help command.\n-m  Minimum Mesh offset to test.\n-M  Maximum Mesh offset to test.\n-n  Minimum |n| to test.\n-N  Maximum |n| to test.\n\n-c  Test for cycles. Supports -m, -M, -N, and -L.\n-L  Only test for large values of cycles.\n\n-b  Benchmark the delay-testing portion of the program. Supports -n, -N, and -S.\n-S  Sieve depth for delay testing.\n\nFor more info, read the docs: [Coming Soon]");
+        if (!strcmp(argv[i],"-h")) printf("Help for Mesh-Collatz Searcher:\n\n-h  Prints this help command.\n-m  Minimum Mesh offset to test.\n-M  Maximum Mesh offset to test.\n-n  Minimum |n| to test.\n-N  Maximum |n| to test.\n\n-c  Test for cycles. Supports -m, -M, -N, and -L.\n-L  Only test for large values of cycles.\n\n-b  Benchmark the delay-testing portion of the program. Supports -m, -n, -N, and -S.\n-S  Sieve depth for delay testing.\n\nFor more info, read the docs: [Coming Soon]");
         if (!strcmp(argv[i],"-c")) {
             executionType = "Cycle";
             if (maxTestVal == 0) maxTestVal = 100000;
@@ -643,8 +643,7 @@ int main(int argc, char* argv[]) {
         double maxCycleWeight = 0;
         int m = meshMin;
         while (true) {
-            benchLoopStart: long long* results = new long long[1048576];
-            
+            long long* results = new long long[1048576];
             meshColCycleSearch(results, maxTestVal+maxTestVal*(m > 0 ? m : -m), 512, 512, m, largeCyclesOnly);
             long long numCycles = *results;
             if (numCycles > maxNumCycles) {
