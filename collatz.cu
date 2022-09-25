@@ -619,31 +619,36 @@ float meshColShortcut(long long N, int blocks, int threads) {
 }
 int main() {
     //Right now this just runs a benchmark of all numbers up to +/- 10B
-    std::cout << "Mesh-Collatz Searcher v0.1.4\nRunning Benchmark..." << std::endl;
+    std::cout << "Mesh-Collatz Searcher v0.1.414\nRunning Benchmark..." << std::endl;
     long long N = 10000000000LL;
     printf("Cycle Testing\n");
     int i = 0;
+    double f = 1;
     long long maxNumCycles = 0;
     long long maxCycleStart = 0;
     double maxCycleWeight = 0;
     while (true) {
-        long long temp;
-        long long *results = &temp;
-        meshColCycleSearch(results, 100000+100000*(i > 0 ? i : -i), 512, 512, i);
+        benchLoopStart: printf("m=%i ", i);
+        long long* results = new long long[1048576];
+        try {
+        meshColCycleSearch(results, f*100000+f*100000*(i > 0 ? i : -i), 512, 512, i);
+        } catch (...) {
+            goto benchLoopStart;
+        }
         long long numCycles = *results;
         if (numCycles > maxNumCycles) {
-            printf("Record number of cycles: %lld in m = %i\n", numCycles, i);
+            printf("\nRecord number of cycles: %lld in m = %i ", numCycles, i);
             maxNumCycles = numCycles;
         }
         for (int j = 1; j <= numCycles; j++) {
             long long cycleVal = *(results+j);
             double cycleWeight = (cycleVal - 2*i) / (double)(4*i+1);
             if (std::abs(cycleVal) > maxCycleStart) {
-                printf("Record cycle start: %lld in m = %i\n", *(results+j), i);
+                printf("\nRecord cycle start: %lld in m = %i ", *(results+j), i);
                 maxCycleStart = std::abs(cycleVal);
             }
             if (std::abs(cycleWeight) > maxCycleWeight) {
-                printf("Record cycle weight: %f in m = %i\n", (*(results+j)-2*i)/(double)(4*i+1), i);
+                printf("\nRecord cycle weight: %f in m = %i ", (*(results+j)-2*i)/(double)(4*i+1), i);
                 maxCycleWeight = std::abs(cycleWeight);
             }
         }
@@ -652,6 +657,7 @@ int main() {
         } else {
             i *= -1;
         }
+        delete [] results;
     }
     printf("No Sieve - Mesh\n");
     meshColShortcut(N, 512, 512);
