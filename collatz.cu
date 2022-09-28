@@ -8,6 +8,7 @@
 #include <math.h>
 #include <chrono>
 #include <thread>
+#include "int128.h"
 
 /*
  * This is the kernel for finding all cycles under a certain size in the Mesh-Collatz sequence.
