@@ -134,7 +134,7 @@ class int129 {
 
     //Onto the arithmetic operations! +, -, *, and %.
 
-    //Again, we do unsigned operators first.
+    //Again, we do unsigned operators first. And addition and subtraction.
 
     //ASM version (broken)
     /*__host__ __device__ static inline int129 uadd129(int129 x, int129 y) {
@@ -242,6 +242,15 @@ class int129 {
         }
     }
 
+    template <typename T>
+    __host__ __device__ friend int129 operator+(int129 a, const T& b) { return add129(a, b); }
+    
+    template <typename T>
+    __host__ __device__ inline int129 operator+=(const T& b) { return add129(*this, b); }
+    
+    __host__ __device__ inline int129 operator++() { return *this += 1; }
+    
+
     //Now subtraction is comparatively easy...
     __host__ __device__ static inline int129 sub129(int129 x, int129 y) {
         y.sign = !y.sign;
@@ -251,5 +260,126 @@ class int129 {
     template <typename T>
     __host__ __device__ static inline int129 sub129(int129 x, T y) {
         return add129(x, -y);
+    }
+    
+    template <typename T>
+    __host__ __device__ friend int129 operator-(int129 a, const T& b) { return sub129(a, b); }
+    
+    template <typename T>
+    __host__ __device__ inline int129 operator-=(const T& b) { return sub129(*this, b); }
+    
+    __host__ __device__ inline int129 operator--() { return *this += 1; }
+
+    //Alright, onto multiplication and division!
+    
+    //First, unsigned operations.
+    __host__ __device__ static inline int129 umul129(int129 x, int129 y) {
+        int129 res;
+        res.lo = x.lo * y.lo;
+        res.hi = __umul64hi(x.lo, y.lo);
+        res.hi += x.hi * y.lo + x.lo * y.hi;
+        return res;
+    }
+
+    __host__ __device__ static inline int129 umul129(int129 x, unsigned long long y) {
+        int129 res;
+        res.lo = x.lo * y;
+        res.hi = __umul64hi(x.lo, y);
+        res.hi += x.hi * y;
+        return res;
+    }
+
+    // taken from libdivide's adaptation of this implementation origininally in
+    // Hacker's Delight: http://www.hackersdelight.org/hdcodetxt/divDouble.c.txt
+    // License permits inclusion here per:
+    // http://www.hackersdelight.org/permissions.htm
+    __host__ __device__ static inline unsigned long long udiv129to64(int129 x, unsigned long long v, unsigned long long * r = NULL) // x / v
+    {
+        const unsigned long long b = 1ull << 32;
+        unsigned long long  un1, un0,
+                vn1, vn0,
+                q1, q0,
+                un64, un21, un10,
+                rhat;
+        int s;
+
+        if(x.hi >= v){
+        if( r != NULL) *r = (unsigned long long) -1;
+        return  (unsigned long long) -1;
+        }
+
+        s = clz64(v);
+
+        if(s > 0){
+        v = v << s;
+        un64 = (x.hi << s) | ((x.lo >> (64 - s)) & (-s >> 31));
+        un10 = x.lo << s;
+        }else{
+        un64 = x.lo | x.hi;
+        un10 = x.lo;
+        }
+
+        vn1 = v >> 32;
+        vn0 = v & 0xffffffff;
+
+        un1 = un10 >> 32;
+        un0 = un10 & 0xffffffff;
+
+        q1 = un64/vn1;
+        rhat = un64 - q1*vn1;
+
+    again1:
+        if (q1 >= b || q1*vn0 > b*rhat + un1){
+        q1 -= 1;
+        rhat = rhat + vn1;
+        if(rhat < b) goto again1;
+        }
+
+        un21 = un64*b + un1 - q1*v;
+
+        q0 = un21/vn1;
+        rhat = un21 - q0*vn1;
+    again2:
+        if(q0 >= b || q0 * vn0 > b*rhat + un0){
+        q0 = q0 - 1;
+        rhat = rhat + vn1;
+        if(rhat < b) goto again2;
+        }
+
+        if(r != NULL) *r = (un21*b + un0 - q0*v) >> s;
+        return q1*b + q0;
+    }
+
+    __host__ __device__ static inline int129 udiv129(int129 x, unsigned long long v, unsigned long long *r = NULL) {
+        int129 res;
+        res.hi = x.hi/v;
+        x.hi %= v;
+        res.lo = udiv129to64(x, v, r);
+        return res;
+    }
+
+    //Signed operators are much easier this time.
+    __host__ __device__ static inline int129 mul129(int129 x, int129 y) {
+        int129 res = umul129(x, y);
+        if (x.sign == y.sign) res.sign = POSITIVE;
+        else res.sign = NEGATIVE:
+        return res;
+    }
+    
+    __host__ __device__ static inline int129 mul129(int129 x, unsigned long long y) {
+        int129 res = umul129(x, y);
+        if (x.sign == y.sign) res.sign = POSITIVE;
+        else res.sign = NEGATIVE:
+        return res;
+    }
+
+    template <typename T>
+    __host__ __device__ friend int129 operator*(int129 a, const T* b) { return mul129(a, b) }
+
+    __host__ __device__ static inline int129 div129(int129 x, unsigned long long y) {
+        int129 res = udiv129(x, y);
+        if (x.sign == y.sign) res.sign = POSITIVE;
+        else res.sign = NEGATIVE:
+        return res;
     }
 };
