@@ -1,14 +1,8 @@
 //This is the main section of the program, where all of the kernels and functions used in the program are defined.
 //I'll try to explain everything that I've done in the comments.
 
-#include <iostream>
-#include <string>
-#include <algorithm>
-#include <stdint.h>
-#include <math.h>
-#include <chrono>
-#include <thread>
-#include "int128.h"
+//This file has the 128-bit integer implementation, and all of the headers needed.
+#include "int129.cuh"
 
 /*
  * This is the kernel for finding all cycles under a certain size in the Mesh-Collatz sequence.
@@ -244,7 +238,7 @@ void meshColGPURepeatedSteps(int repeatDepth, int sharedMemLevel, long long siev
                      * We replace a mod b (a % b) with (a % b + b) % b
                      * And we replace a / b with (a - (b - 1)) / b for negatives only
                      */
-                    x = pows3[sharedT[(x % sieveSize + sieveSize) % sieveSize]]*((x>0 ? x : (x - (sieveSize - 1))) / sieveSize)+sharedS[(x % sieveSize + sieveSize) % sieveSize];
+                    x = pows3[sharedT[(x % sieveSize + sieveSize) % sieveSize]]*((x>0 ? x : (x - (sieveSize - 1))) >> repeatDepth)+sharedS[(x % sieveSize + sieveSize) % sieveSize];
                 } else { //If x is small things are a lot easier
                     x = sharedS[x];
                 }

@@ -1,3 +1,3 @@
-nvcc collatz.cu collatz_old_algs.cu -o collatz
-collatz -b -m 1
+nvcc collatz.cu -o collatz
+collatz -b -N 1000000
 pause
