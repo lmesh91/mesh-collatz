@@ -375,6 +375,8 @@ class int129 {
 
     template <typename T>
     __host__ __device__ friend int129 operator*(int129 a, const T* b) { return mul129(a, b) }
+    template <typename T>
+    __host__ __device__ inline int129& operator*=(const T* b) { return mul129(*this, b) }
 
     __host__ __device__ static inline int129 div129(int129 x, unsigned long long y) {
         int129 res = udiv129(x, y);
@@ -382,4 +384,31 @@ class int129 {
         else res.sign = NEGATIVE:
         return res;
     }
+
+    template <typename T>
+    __host__ __device__ friend int129 operator/(int129 a, const T* b) { return div129(a, b) }
+    template <typename T>
+    __host__ __device__ inline int129& operator/=(const T* b) { return div129(*this, b) }
+
+    //modulo becomes really easy now, with how division is defined
+    template <typename T>
+    __host__ __device__ friend T operator%(int129 x, const T& v) {
+        unsigned long long ures;
+        udiv128to64(x, v, &res);
+        if ((v >= 0) ? (x.sign == POSITIVE) : (x.sign == NEGATIVE)) {
+            return (T)res;
+        } else {
+            return -1 * (T)res;
+        }
+    }
+
+    template <typename T>
+    __host__ __device__ inline int129& operator%=(const T& v) {
+        long long res = this % v;
+        this.low = res;
+        this.high = 0;
+        this.sign = (res >= 0) ? POSITIVE : NEGATIVE;
+    }
+
+    
 };
