@@ -137,16 +137,6 @@ class int129 {
 
     //Again, we do unsigned operators first. And addition and subtraction.
 
-    //ASM version (broken)
-    /*__host__ __device__ static inline int129 uadd129(int129 x, int129 y) {
-    int129 res;
-    asm("add.cc.u64    %0, %2, %4;\n\t"
-        "addc.u64      %1, %3, %5;\n\t"
-        : "=l" (res.lo)  "=l" (res.hi)
-        : "l" (x.lo), "l" (x.hi), "l" (y.lo), "l" (y.hi));
-    return res;
-    }*/
-
     __host__ __device__ static inline int129 uadd129(int129 x, int129 y) {
         int129 res;
         res.hi = x.hi + y.hi;
@@ -154,17 +144,6 @@ class int129 {
         if (res.lo < x.lo) ++res.hi;
         return res;
     }
-
-    //ASM version (broken)
-    /*__host__ __device__ static inline int129 uadd129(int129 x, unsigned long long y) {
-        int129 res;
-        asm(  "add.cc.u64    %0, %2, %4;\n\t"
-              "addc.u64      %1, %3, 0;\n\t"
-              : "=l" (res.lo), "=l" (res.hi)
-              : "l" (x.lo), "l" (x.hi),
-                "l" (y));
-        return res;
-    }*/
     
     __host__ __device__ static inline int129 uadd129(int129 x, unsigned long long y) {
         int129 res;
