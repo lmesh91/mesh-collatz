@@ -4,6 +4,8 @@
 //This file has the 128-bit integer implementation, and all of the headers needed.
 #include "int129.cuh"
 
+const long long two62 = 2LL << 62; //This is used
+
 /*
  * This is the kernel for finding all cycles under a certain size in the Mesh-Collatz sequence.
  * Arguments:
@@ -207,7 +209,7 @@ void meshColGPURepeatedSteps(int repeatDepth, int sharedMemLevel, long long siev
         __syncthreads();                                                        
         for (long long i = minN+threadIdx.x+blockIdx.x*blockDim.x; i <= maxN; i+=blockDim.x*gridDim.x) {
             int sign = 1;
-            loopStart2: long long x = sign * i; //The label is so that we can run the loop with i and -i.
+            loopStart2: int129 x = sign * i; //The label is so that we can run the loop with i and -i.
             while (true) {
                 if (x >= cycleLeadMin && x <= cycleLeadMax) { // If x is within the range of cycleLeads we do a binary search
                     //This is self explanatory
@@ -225,7 +227,7 @@ void meshColGPURepeatedSteps(int repeatDepth, int sharedMemLevel, long long siev
                         }
                     }
                 }
-                d_repeated+=repeatDepth+sharedT[(x % sieveSize + sieveSize) % sieveSize]; //We want to double-count 3x+1 steps since it's really 2 steps in one
+                d_repeated+=repeatDepth+sharedT[(((long long)(x.lo % two62) * (x.sign ? 1 : -1)) % sieveSize + sieveSize) % sieveSize]; //We want to double-count 3x+1 steps since it's really 2 steps in one
                 if (x >= sieveSize || x < 0) {
                     //todo: account for 64-bit overflow, e.g. n = 8528817511 goes over 64-bits, but is lucky enough to not do that in one go
                     /*if ((INT64_MAX - s[x%sieveSize])/powf(3,t[x%sieveSize]) < x/sieveSize) {
@@ -238,9 +240,10 @@ void meshColGPURepeatedSteps(int repeatDepth, int sharedMemLevel, long long siev
                      * We replace a mod b (a % b) with (a % b + b) % b
                      * And we replace a / b with (a - (b - 1)) / b for negatives only
                      */
-                    x = pows3[sharedT[(x % sieveSize + sieveSize) % sieveSize]]*((x>0 ? x : (x - (sieveSize - 1))) >> repeatDepth)+sharedS[(x % sieveSize + sieveSize) % sieveSize];
+                    long long safeX = (long long)(x.lo % two62) * (x.sign ? 1 : -1); //x % 2^62 basically
+                    x = pows3[sharedT[(safeX % sieveSize + sieveSize) % sieveSize]]*((x>0 ? x : (x - (sieveSize - 1))) >> repeatDepth)+sharedS[(safeX % sieveSize + sieveSize) % sieveSize];
                 } else { //If x is small things are a lot easier
-                    x = sharedS[x];
+                    x = sharedS[x.lo];
                 }
             }
             endOfLoop2:;
@@ -261,7 +264,7 @@ void meshColGPURepeatedSteps(int repeatDepth, int sharedMemLevel, long long siev
         __syncthreads();
         for (long long i = minN+threadIdx.x+blockIdx.x*blockDim.x; i <= maxN; i+=blockDim.x*gridDim.x) {
             int sign = 1;
-            loopStart1: long long x = sign * i;
+            loopStart1: int129 x = sign * i;
             while (true) {
                 if (x >= cycleLeadMin && x <= cycleLeadMax) { 
                     int low = 0;
@@ -278,7 +281,7 @@ void meshColGPURepeatedSteps(int repeatDepth, int sharedMemLevel, long long siev
                         }
                     }
                 }
-                d_repeated+=repeatDepth+t[(x % sieveSize + sieveSize) % sieveSize];
+                d_repeated+=repeatDepth+t[((long long)(x.lo % two62) * (x.sign ? 1 : -1) % sieveSize + sieveSize) % sieveSize];
                 //todo: account for 64-bit overflow, e.g. n = 8528817511 goes over 64-bits, but is lucky enough to not do that in one go
                 if (x >= sieveSize || x < 0) {
                     /*if ((INT64_MAX - s[x%sieveSize])/powf(3,t[x%sieveSize]) < x/sieveSize) {
@@ -286,9 +289,10 @@ void meshColGPURepeatedSteps(int repeatDepth, int sharedMemLevel, long long siev
                     }*/
                     // a mod b always rounding down: (a % b + b) % b
                     // a/b always rounding down: (a - (b - 1)) / b for negatives
-                    x = pows3[t[(x % sieveSize + sieveSize) % sieveSize]]*((x>0 ? x : (x - (sieveSize - 1))) / sieveSize)+s[(x % sieveSize + sieveSize) % sieveSize];
+                    long long safeX = (long long)(x.lo % two62) * (x.sign ? 1 : -1); //x % 2^62 basically
+                    x = pows3[t[(safeX % sieveSize + sieveSize) % sieveSize]]*((x>0 ? x : (x - (sieveSize - 1))) >> repeatDepth)+s[(safeX % sieveSize + sieveSize) % sieveSize];
                 } else {
-                    x = s[x];
+                    x = s[x.lo];
                 }
             }
             endOfLoop1:;
@@ -301,7 +305,7 @@ void meshColGPURepeatedSteps(int repeatDepth, int sharedMemLevel, long long siev
     if (sharedMemLevel == 0) { //Unified Cycle Leads and Sieve
         for (long long i = minN+threadIdx.x+blockIdx.x*blockDim.x; i <= maxN; i+=blockDim.x*gridDim.x) {
             int sign = 1;
-            loopStart0: long long x = sign * i;
+            loopStart0: int129 x = sign * i;
             while (true) {
                 if (x >= cycleLeadMin && x <= cycleLeadMax) { 
                     int low = 0;
@@ -318,7 +322,7 @@ void meshColGPURepeatedSteps(int repeatDepth, int sharedMemLevel, long long siev
                         }
                     }
                 }
-                d_repeated+=repeatDepth+t[(x % sieveSize + sieveSize) % sieveSize];
+                d_repeated+=repeatDepth+t[(((long long)(x.lo % two62) * (x.sign ? 1 : -1)) % sieveSize + sieveSize) % sieveSize]; //We want to double-count 3x+1 steps since it's really 2 steps in one
                 //todo: account for 64-bit overflow, e.g. n = 8528817511 goes over 64-bits, but is lucky enough to not do that in one go
                 if (x >= sieveSize || x < 0) {
                     /*if ((INT64_MAX - s[x%sieveSize])/powf(3,t[x%sieveSize]) < x/sieveSize) {
@@ -326,9 +330,10 @@ void meshColGPURepeatedSteps(int repeatDepth, int sharedMemLevel, long long siev
                     }*/
                     // a mod b always rounding down: (a % b + b) % b
                     // a/b always rounding down: (a - (b - 1)) / b for negatives
-                    x = pows3[t[(x % sieveSize + sieveSize) % sieveSize]]*((x>0 ? x : (x - (sieveSize - 1))) / sieveSize)+s[(x % sieveSize + sieveSize) % sieveSize];
-                } else {
-                    x = s[x];
+                    long long safeX = (long long)(x.lo % two62) * (x.sign ? 1 : -1); //x % 2^62 basically
+                    x = pows3[t[(safeX % sieveSize + sieveSize) % sieveSize]]*((x>0 ? x : (x - (sieveSize - 1))) >> repeatDepth)+s[(safeX % sieveSize + sieveSize) % sieveSize];
+               } else {
+                    x = s[x.lo];
                 }
             }
             endOfLoop0:;
@@ -352,7 +357,6 @@ void meshColGPURepeatedSteps(int repeatDepth, int sharedMemLevel, long long siev
  * threads <int> - the number of CUDA threads to use
  */
 float meshColRepeatedSteps(int repeatDepth, long long minN, long long maxN, int meshOffset, int blocks, int threads) {
-
     //Initialize c and CUDA Events
     long long *c;
     cudaMallocManaged(&c, sizeof(long long)*blocks*threads);
@@ -605,7 +609,7 @@ float meshColShortcut(long long minN, long long maxN, int meshOffset, int blocks
 }
 int main(int argc, char* argv[]) {
     //Right now this just runs a benchmark of all numbers up to +/- 10B
-    printf("Mesh-Collatz Searcher v0.2.1\n");
+    printf("Mesh-Collatz Searcher v0.3.14\n");
     //Initializing some vars to be taken in by the arguments
     std::string executionType = "";
     int meshMin = 0;

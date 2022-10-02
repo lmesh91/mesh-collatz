@@ -20,7 +20,8 @@
 #define POSITIVE true
 #define NEGATIVE false
 
-//This class is HEAVILY inspired from https://github.com/curtisseizert/CUDA-uint128/blob/master/cuda_uint128.h.
+//This class is taken from https://github.com/curtisseizert/CUDA-uint128/blob/master/cuda_uint128.h, with some slight modifications for signed integers.
+//There's probably some bugs in here that just aren't used by the program, so be careful if you decide to use this yourself.
 class int129 {
     public:
     unsigned long long lo, hi;
@@ -114,8 +115,8 @@ class int129 {
     __host__ __device__ static bool geq129(int129 a, int129 b) {
         if (a.sign < b.sign) return 0;
         if (a.sign > b.sign) return 1;
-        if (a.sign == POSITIVE) return ug129(a, b);
-        else return ul129(a, b);
+        if (a.sign == POSITIVE) return uge129(a, b);
+        else return ule129(a, b);
     }
     __host__ __device__ friend bool operator>=(int129 a, int129 b) { return geq129(a, b); }
 
@@ -195,8 +196,7 @@ class int129 {
         if (x.sign == y.sign) {
             res = uadd129(x, y); //sign is preserved
             res.sign = x.sign;
-        }
-        if (x.sign > y.sign) {
+        } else if (x.sign > y.sign) {
             if (uge129(x, y)) { // x - y is positive
                 res = usub129(x, y);
                 res.sign = x.sign;
@@ -213,17 +213,18 @@ class int129 {
                 res.sign = x.sign;
             }
         }
+        return res;
     }
 
     template <typename T>
     __host__ __device__ static inline int129 add129(int129 x, T y) {
         int129 res;
         bool ysign = y >= 0 ? POSITIVE : NEGATIVE;
+        y = y >= 0 ? y : -y;
         if (x.sign == ysign) {
             res = uadd129(x, y); //sign is preserved
             res.sign = x.sign;
-        }
-        if (x.sign > ysign) {
+        } else if (x.sign > ysign) {
             if (uge129(x, y)) { // x - y is positive
                 res = usub129(x, y);
                 res.sign = x.sign;
@@ -240,6 +241,7 @@ class int129 {
                 res.sign = x.sign;
             }
         }
+        return res;
     }
 
     template <typename T>
@@ -273,7 +275,7 @@ class int129 {
     //Alright, onto multiplication and division!
     
     //First, unsigned operations.
-    __host__ __device__ static inline int129 umul129(int129 x, int129 y) {
+    __device__ static inline int129 umul129(int129 x, int129 y) {
         int129 res;
         res.lo = x.lo * y.lo;
         res.hi = __umul64hi(x.lo, y.lo);
@@ -281,7 +283,7 @@ class int129 {
         return res;
     }
 
-    __host__ __device__ static inline int129 umul129(int129 x, unsigned long long y) {
+    __device__ static inline int129 umul129(int129 x, unsigned long long y) {
         int129 res;
         res.lo = x.lo * y;
         res.hi = __umul64hi(x.lo, y);
@@ -293,7 +295,7 @@ class int129 {
     // Hacker's Delight: http://www.hackersdelight.org/hdcodetxt/divDouble.c.txt
     // License permits inclusion here per:
     // http://www.hackersdelight.org/permissions.htm
-    __host__ __device__ static inline unsigned long long udiv129to64(int129 x, unsigned long long v, unsigned long long * r = NULL) // x / v
+    __device__ static inline unsigned long long udiv129to64(int129 x, unsigned long long v, unsigned long long * r = NULL) // x / v
     {
         const unsigned long long b = 1ull << 32;
         unsigned long long  un1, un0,
@@ -308,7 +310,7 @@ class int129 {
         return  (unsigned long long) -1;
         }
 
-        s = clz64(v);
+        s = __clzll(v);
 
         if(s > 0){
         v = v << s;
@@ -350,7 +352,7 @@ class int129 {
         return q1*b + q0;
     }
 
-    __host__ __device__ static inline int129 udiv129(int129 x, unsigned long long v, unsigned long long *r = NULL) {
+    __device__ static inline int129 udiv129(int129 x, unsigned long long v, unsigned long long *r = NULL) {
         int129 res;
         res.hi = x.hi/v;
         x.hi %= v;
@@ -359,56 +361,69 @@ class int129 {
     }
 
     //Signed operators are much easier this time.
-    __host__ __device__ static inline int129 mul129(int129 x, int129 y) {
+    __device__ static inline int129 mul129(int129 x, int129 y) {
         int129 res = umul129(x, y);
         if (x.sign == y.sign) res.sign = POSITIVE;
-        else res.sign = NEGATIVE:
+        else res.sign = NEGATIVE;
         return res;
     }
     
-    __host__ __device__ static inline int129 mul129(int129 x, unsigned long long y) {
-        int129 res = umul129(x, y);
-        if (x.sign == y.sign) res.sign = POSITIVE;
-        else res.sign = NEGATIVE:
+    __device__ static inline int129 mul129(int129 x, long long y) {
+        int129 res = umul129(x, (y >= 0 ? y : -y));
+        if (x.sign == (y >= 0 ? POSITIVE : NEGATIVE)) res.sign = POSITIVE;
+        else res.sign = NEGATIVE;
         return res;
     }
 
     template <typename T>
-    __host__ __device__ friend int129 operator*(int129 a, const T* b) { return mul129(a, b) }
+    __device__ friend int129 operator*(int129 a, const T b) { return mul129(a, b); }
     template <typename T>
-    __host__ __device__ inline int129& operator*=(const T* b) { return mul129(*this, b) }
+     __device__ inline int129& operator*=(const T* b) { return mul129(*this, b); }
 
-    __host__ __device__ static inline int129 div129(int129 x, unsigned long long y) {
+     __device__ static inline int129 div129(int129 x, long long y) {
         int129 res = udiv129(x, y);
-        if (x.sign == y.sign) res.sign = POSITIVE;
-        else res.sign = NEGATIVE:
+        if (x.sign == (y >= 0 ? POSITIVE : NEGATIVE)) res.sign = POSITIVE;
+        else res.sign = NEGATIVE;
         return res;
     }
 
     template <typename T>
-    __host__ __device__ friend int129 operator/(int129 a, const T* b) { return div129(a, b) }
+     __device__ friend int129 operator/(int129 a, const T* b) { return div129(a, *b); }
     template <typename T>
-    __host__ __device__ inline int129& operator/=(const T* b) { return div129(*this, b) }
+     __device__ inline int129& operator/=(const T* b) { int129 x = *this; return x / *b; }
 
     //modulo becomes really easy now, with how division is defined
     template <typename T>
-    __host__ __device__ friend T operator%(int129 x, const T& v) {
+     __device__ friend T operator%(int129 x, const T& v) {
         unsigned long long ures;
-        udiv128to64(x, v, &res);
+        udiv129to64(x, v, &ures);
         if ((v >= 0) ? (x.sign == POSITIVE) : (x.sign == NEGATIVE)) {
-            return (T)res;
+            return (T)ures;
         } else {
-            return -1 * (T)res;
+            return -1 * (T)ures;
         }
     }
 
     template <typename T>
-    __host__ __device__ inline int129& operator%=(const T& v) {
-        long long res = this % v;
-        this.low = res;
-        this.high = 0;
-        this.sign = (res >= 0) ? POSITIVE : NEGATIVE;
+     __device__ inline int129& operator%=(const T& v) {
+        int129 x = *this;
+        return x % v;
     }
 
+    //>> is also used
+    template <typename T>
+    __host__ __device__ inline int129& operator>>=(const T& b)
+    {
+        if (b < 64) {
+            lo = (lo >> b) | (hi << (64-b));
+            hi >>= b;
+        } else {
+            lo = hi >> (b-64);
+            hi = 0;
+        }
+        return *this;
+    }
+    template <typename T>
+    __host__ __device__ friend inline int129 operator>>(int129 a, const T & b){a >>= b; return a;}
     
 };
