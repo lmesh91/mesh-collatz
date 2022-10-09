@@ -637,6 +637,7 @@ CollatzResults* meshColShortcut(long long minN, long long maxN, int meshOffset, 
  * threads <int> - the number of CUDA threads to use in each block
  */
 int meshColBench(int meshOffset, long long minN, long long maxN, int blocks, int threads) {
+    //Benchmarking is now heuristic based, and this enables a flag that returns the largest result with <2048 cycle leads.
     CollatzResults* colres = meshColRepeatedSteps(-1, minN, maxN, meshOffset, blocks, threads);
     return colres->delay;
 }
@@ -652,7 +653,6 @@ int meshColBench(int meshOffset, long long minN, long long maxN, int blocks, int
  * SAVE_INTERVAL <long> - how many N to test before saving to a file
  * file <string> - the file name to save results to
  */
-
 CollatzResults* meshColRunner(int meshOffset, int maxM, long long minN, long long maxN, int blocks, int threads, const long long SAVE_INTERVAL, std::string file, unsigned long long partialDelay) {
     //Save interval default value is 2^35
     CollatzResults* colres = new CollatzResults(0, partialDelay);
@@ -660,6 +660,7 @@ CollatzResults* meshColRunner(int meshOffset, int maxM, long long minN, long lon
     long long benchMax = benchMin + (1LL << 26);
     printf("Benchmarking sieve sizes...\n");
     int sievePow = meshColBench(meshOffset, benchMin, benchMax, blocks, threads);
+    printf("Using 2^%i sieve.\n", sievePow);
     //All of this is pasted from meshColRepeatedSteps
     //Initialize c and CUDA Events
     unsigned long long *c;
@@ -866,7 +867,7 @@ void meshColSearcher(int meshMin, int meshMax, long long minN, long long maxN, i
 
 int main(int argc, char* argv[]) {
     //Right now this just runs a benchmark of all numbers up to +/- 10B
-    printf("Mesh-Collatz Searcher v1.0.0\n");
+    printf("Mesh-Collatz Searcher v1.0.1\n");
     //Initializing some vars to be taken in by the arguments
     std::string executionType = "";
     int meshMin = 0;
