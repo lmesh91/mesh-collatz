@@ -3,6 +3,7 @@
 
 //This file has the 128-bit integer implementation, and all of the headers needed.
 #include "int129.cuh"
+#include <fstream>
 
 const long long two62 = 1LL << 62;
 
@@ -272,6 +273,7 @@ void meshColGPURepeatedSteps(int repeatDepth, int sharedMemLevel, long long siev
             sharedCycleLeads[i] = cycleLeads[i];   
             sharedCycleLeadDelays[i] = cycleLeadDelays[i];
         }
+        
         __syncthreads();
         for (long long i = minN+threadIdx.x+blockIdx.x*blockDim.x; i <= maxN; i+=blockDim.x*gridDim.x) {
             int sign = 1;
@@ -318,6 +320,7 @@ void meshColGPURepeatedSteps(int repeatDepth, int sharedMemLevel, long long siev
             int sign = 1;
             loopStart0: int129 x = sign * i;
             while (true) {
+                if (repeatDepth == 15 && threadIdx.x+blockIdx.x==0) printf("%llu\n", x.lo);
                 if (x >= cycleLeadMin && x <= cycleLeadMax) { 
                     int low = 0;
                     int high = cycleLeadSize;  
@@ -396,7 +399,8 @@ CollatzResults* meshColRepeatedSteps(int repeatDepth, long long minN, long long 
     //cycleLeadPrev is where the last iteration started looking at, cycleLeadNow is where this one started looking at, and cycleLeadNext is where we're looking at now
     long long *cycleLeadBounds;
     cudaMallocManaged(&cycleLeadBounds, sizeof(long long)*3);
-    //printf("Generating cycle leads\n");
+    bool goForever = false; 
+    if (repeatDepth == -1) {goForever = true; repeatDepth = 25;}
     for (int iters = 0; iters < repeatDepth; iters++) {
         for (int i = cycleLeadPrev; i < cycleLeadNow; i++) {
             //This is pretty inefficient since we're blatantly checking if any numbers are double counted but that also doesn't matter
@@ -411,6 +415,7 @@ CollatzResults* meshColRepeatedSteps(int repeatDepth, long long minN, long long 
         }
         cycleLeadPrev = cycleLeadNow;
         cycleLeadNow = cycleLeadNext;
+        if (cycleLeadNow > 2048 && goForever) {return new CollatzResults(0, iters);} //special result for benchmarking
     }
     std::sort(cycleLeads, cycleLeads + cycleLeadNow); //Sort the array
     cycleLeadBounds[0] = cycleLeads[0];
@@ -632,22 +637,236 @@ CollatzResults* meshColShortcut(long long minN, long long maxN, int meshOffset, 
  * threads <int> - the number of CUDA threads to use in each block
  */
 int meshColBench(int meshOffset, long long minN, long long maxN, int blocks, int threads) {
-    int sievePow = 1;
-    int sievePowRecord = -1;
-    float bestMillis = 10000000000000.0f;
-    while (true) {
-        printf("2^%i Sieve:\n", sievePow);
-        CollatzResults* colres = meshColRepeatedSteps(sievePow, minN, maxN, meshOffset, blocks, threads);
-        if (colres->milliseconds < 0.0f || sievePow == 25) return sievePowRecord;
-        if (colres->milliseconds < bestMillis) {
-            sievePowRecord = sievePow; bestMillis = colres->milliseconds;
+    CollatzResults* colres = meshColRepeatedSteps(-1, minN, maxN, meshOffset, blocks, threads);
+    return colres->delay;
+}
+/*
+ * This is the function that runs a Mesh offset for a sustained period of time, with automatic benchmarking and saving.
+ * Arguments:
+ * minN <long> - the number to start testing with (by absolute value)
+ * maxN <long> - the number to test up to (by absolute value)
+ * meshOffset <int> - the Mesh offset
+ * maxM <int> - max Mesh offset tested, for savefiles
+ * blocks <int> - the number of CUDA blocks to use
+ * threads <int> - the number of CUDA threads to use in each block
+ * SAVE_INTERVAL <long> - how many N to test before saving to a file
+ * file <string> - the file name to save results to
+ */
+
+CollatzResults* meshColRunner(int meshOffset, int maxM, long long minN, long long maxN, int blocks, int threads, const long long SAVE_INTERVAL, std::string file, unsigned long long partialDelay) {
+    //Save interval default value is 2^35
+    CollatzResults* colres = new CollatzResults(0, partialDelay);
+    long long benchMin = maxN >> 1;
+    long long benchMax = benchMin + (1LL << 26);
+    printf("Benchmarking sieve sizes...\n");
+    int sievePow = meshColBench(meshOffset, benchMin, benchMax, blocks, threads);
+    //All of this is pasted from meshColRepeatedSteps
+    //Initialize c and CUDA Events
+    unsigned long long *c;
+    cudaMallocManaged(&c, sizeof(unsigned long long)*blocks*threads);
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    
+    //Find the numbers that go to 1 within repeatDepth steps.
+    long long *cycleLeads;
+    cudaMallocManaged(&cycleLeads, sizeof(long long)*100000000);
+    char *cycleLeadDelays;
+    cudaMallocManaged(&cycleLeadDelays, sizeof(char)*100000000);
+    long long *cycleStarts;
+    cudaMallocManaged(&cycleStarts, sizeof(long long)*100000000);
+    printf("Finding cycles...\n");
+    meshColCycleSearch(cycleStarts, 100000+100000*(meshOffset > 0 ? meshOffset : -meshOffset), blocks, threads, meshOffset);
+    int numCycles = cycleStarts[0];
+    for (int i = 0; i < numCycles; i++) {
+        cycleStarts[i] = cycleStarts[i+1];
+        cycleLeads[i] = cycleStarts[i];
+    }
+    long long cycleStartMin = cycleStarts[0];
+    long long cycleStartMax = cycleStarts[numCycles-1];
+    printf("Found %i cycles, ranging from %lld - %lld\n", numCycles, cycleStartMin, cycleStartMax);
+    //Save to file
+    std::ofstream cycleFile(file+"_cycles_"+std::to_string(meshOffset)+".txt");
+    cycleFile << cycleStarts[0];
+    for (int i = 1; i < numCycles; i++) {
+        cycleFile << "," << cycleStarts[i];
+    }
+    cycleFile.close();
+    long long cycleLeadNext = numCycles;
+    long long cycleLeadNow = numCycles;
+    long long cycleLeadPrev = 0;
+    //cycleLeadPrev is where the last iteration started looking at, cycleLeadNow is where this one started looking at, and cycleLeadNext is where we're looking at now
+    long long *cycleLeadBounds;
+    cudaMallocManaged(&cycleLeadBounds, sizeof(long long)*3);
+    printf("Generating cycle leads...\n");
+    for (int iters = 0; iters < sievePow; iters++) {
+        for (int i = cycleLeadPrev; i < cycleLeadNow; i++) {
+            //This is pretty inefficient since we're blatantly checking if any numbers are double counted but that also doesn't matter
+            if (std::find(cycleLeads, cycleLeads + cycleLeadNext, ((cycleLeads[i] - meshOffset) << 1))==cycleLeads + cycleLeadNext) {
+                //This part checks for the reverse of x/2
+                cycleLeads[cycleLeadNext] = (cycleLeads[i] - meshOffset) << 1; cycleLeadNext++;
+            }
+            if (((cycleLeads[i] % 3 + 3) % 3 == ((2 + meshOffset) % 3 + 3) % 3) && (std::find(cycleLeads, cycleLeads + cycleLeadNext, (2 * (cycleLeads[i] - meshOffset)-1)/3)==cycleLeads + cycleLeadNext)) {
+                //This part checks for the reverse of (3x+1)/2
+                cycleLeads[cycleLeadNext] = (2 * (cycleLeads[i] - meshOffset) - 1) / 3; cycleLeadNext++;
+            }
         }
-        sievePow++;
+        cycleLeadPrev = cycleLeadNow;
+        cycleLeadNow = cycleLeadNext;
+    }
+    std::sort(cycleLeads, cycleLeads + cycleLeadNow); //Sort the array
+    cycleLeadBounds[0] = cycleLeads[0];
+    cycleLeadBounds[1] = cycleLeads[cycleLeadNow - 1];
+    cycleLeadBounds[2] = cycleLeadNow;
+
+    //This goes through everything in the array and manually calculates the delay
+    for (int i = 0; i < cycleLeadNow; i++) {
+        long long x = cycleLeads[i];
+        cycleLeadDelays[i] = 0;
+        while (true) {
+            //basically a CPU version of the regular algorithm
+            if (cycleStartMin <= x && x <= cycleStartMax) {
+                int low = 0;
+                int high = numCycles;  
+                while (low != high) {
+                    int mid = (low+high)/2;
+                    if (x == cycleStarts[mid]) {
+                        goto endOfLoopShortcutInCPU2;
+                    } else if (x > cycleStarts[mid]) {
+                        low = mid + 1;
+                    } else {
+                        high = mid;
+                    }
+                }
+            }
+            ++cycleLeadDelays[i];
+            if (x % 2) {
+                ++cycleLeadDelays[i];
+                x *= 3; x++; x >>= 1; x += meshOffset;//(3x+1)/2+m
+            } else {
+                x >>= 1; x += meshOffset;//Still dividing by 2; right shift is 2% faster
+            }
+        }
+        endOfLoopShortcutInCPU2:;
+    }
+    printf("%lld cycle leads generated, ranging from %lld - %lld.\n", cycleLeadNow, cycleLeads[0], cycleLeads[cycleLeadNow - 1]);
+
+    printf("Generating sieve...\n");
+    //Now we generate the sieve.
+    //S saves the trajectory, T saves the number of 3x+1 steps. See the kernel for the theory, but we can use these to skip repeatDepth steps at a time.
+    long long *s;
+    char *t; //We're using char because we know t <= repeatDepth and repeatDepth <= 255
+    cudaMallocManaged(&s, sizeof(long long)<<sievePow);
+    cudaMallocManaged(&t, sizeof(char)<<sievePow);
+    //This could be done on GPU, but if we're sticking with a 2^16 sieve it might not be worth it
+    for (long long i = 0; i < 1<<sievePow; i++) {
+        long long x = i;
+        for (int j = 0; j < sievePow; j++) {
+            if (x % 2) {
+                x *= 3; ++x; x >>= 1; x += meshOffset; ++t[i];
+            } else {
+                x >>= 1; x += meshOffset;
+            }
+        }
+        s[i] = x;
+    }
+    //Here's the logic for all of the shared memory things.
+    int sharedMemLevel = 0;
+    if (65536 <= cycleLeadNow) {
+        return new CollatzResults(-1, 0); //error result
+    }
+    if (2048 >= cycleLeadNow) {
+        sharedMemLevel = 1;
+    }
+    if (512 >= cycleLeadNow && sievePow <= 11) {
+        sharedMemLevel = 2;
+    }
+    printf("Sieve generated, starting GPU cycle searching...\n");
+    for (long long w = minN; w <= maxN; w += SAVE_INTERVAL) {
+        
+        //In preparation for the GPU, we initialize c[i];
+        for (int i = 0; i < blocks*threads; i++) {
+            c[i] = 0;
+        }
+
+        long long segmentMaxN = (w + SAVE_INTERVAL - 1 >= maxN) ? maxN : (w + SAVE_INTERVAL - 1);
+
+        //Enter hyperspeed
+        cudaEventRecord(start);
+        meshColGPURepeatedSteps<<<blocks, threads>>>(sievePow, sharedMemLevel, 1<<sievePow, c, s, t, cycleLeads, cycleLeadBounds, cycleLeadDelays, w, segmentMaxN);
+        cudaEventRecord(stop);
+
+
+        cudaDeviceSynchronize();
+        cudaEventSynchronize(stop);
+
+        unsigned long long delayTot = c[0];
+        for (int i = 1; i < blocks*threads; i++) {
+            delayTot += c[i]; //Add up the c array to find the total delay
+        }
+        float milliseconds = 0;
+        cudaEventElapsedTime(&milliseconds, start, stop);
+        
+        colres->delay += delayTot;
+        colres->milliseconds += milliseconds;
+        //Save to file
+        std::ofstream savefile(file+"_checkpoint.txt");
+        savefile << "minN=" << minN << "\nmaxN=" << maxN << "\nn=" << (segmentMaxN + 1) << "\nm=" << meshOffset << "\nmaxM=" << maxM << "\nsaveInterval=" << SAVE_INTERVAL << "\ndelay=" << colres->delay;
+        savefile.close();
+        std::ofstream partialdelayfile(file+"_partialDelaySums_"+std::to_string(meshOffset)+".txt", std::iostream::app);
+        partialdelayfile << w << "," << segmentMaxN << "," << delayTot << "\n";
+        partialdelayfile.close();
+        printf("Tested to n=%lld in %fms, delay = %llu for m = %i\n", segmentMaxN, milliseconds, delayTot, meshOffset);
+    }
+    
+    std::cout << "Elapsed time: " << std::to_string(colres->milliseconds) << "ms" << std::endl;
+    std::cout << "Tot delay: " << std::to_string(colres->delay) << std::endl;
+    std::ofstream resfile(file+"_"+std::to_string(meshOffset)+".txt");
+    resfile << "Delay: " << colres->delay << "\nTime: " << colres->milliseconds;
+    resfile.close();
+    
+    //Make sure to free all the memory at the end
+    cudaFree(c);
+    cudaFree(s);
+    cudaFree(t);
+    cudaFree(cycleLeads);
+    cudaFree(cycleStarts);
+    cudaFree(cycleLeadBounds);
+    cudaFree(cycleLeadDelays);
+    return colres;
+}
+
+/*
+ * This is the function that runs a Mesh offset for a sustained period of time, with automatic benchmarking and saving.
+ * Arguments:
+ * minN <long> - the number to start testing with (by absolute value)
+ * maxN <long> - the number to test up to (by absolute value)
+ * meshOffset <int> - the Mesh offset
+ * blocks <int> - the number of CUDA blocks to use
+ * threads <int> - the number of CUDA threads to use in each block
+ * SAVE_INTERVAL <long> - how many N to test before saving to a file
+ * file <string> - the file name to save results to
+ * curN <long> - the current number being tested
+ * partialDelay <unsigned long> - how much of the delay is calculated so far
+ */
+void meshColSearcher(int meshMin, int meshMax, long long minN, long long maxN, int blocks, int threads, const long long SAVE_INTERVAL, std::string file, long long curN, unsigned long long partialDelay) {
+    int m = meshMin;
+    while (true) {
+        printf("Testing m = %i...\n", m);
+        meshColRunner(m, meshMax, curN, maxN, blocks, threads, SAVE_INTERVAL, file, partialDelay);
+        curN = minN;
+        if (m == meshMax) exit(0);
+        if (m >= 0) {
+            m *= -1; m--;
+        } else {
+            m *= -1;
+        }
     }
 }
+
 int main(int argc, char* argv[]) {
     //Right now this just runs a benchmark of all numbers up to +/- 10B
-    printf("Mesh-Collatz Searcher v0.3.2\n");
+    printf("Mesh-Collatz Searcher v1.0.0\n");
     //Initializing some vars to be taken in by the arguments
     std::string executionType = "";
     int meshMin = 0;
@@ -658,22 +877,38 @@ int main(int argc, char* argv[]) {
     int sieveSize = 16;
     int threads = 512;
     int blocks = 512;
+    long long saveInterval = 1LL << 35;
+    std::string filename = "collatz";
     for (int i = 0; i < argc; i++) { //Argument interpreter - pretty self explanatory
-        if (!strcmp(argv[i],"-h")) printf("Help for Mesh-Collatz Searcher:\n\n-h  Prints this help command.\n-m  Minimum Mesh offset to test.\n-M  Maximum Mesh offset to test.\n-n  Minimum |n| to test.\n-N  Maximum |n| to test.\n-T  Number of threads to use on the GPU. Supported by everything.\n-B  Number of blocks to use on the GPU. Supported by everything.\n\n-b  Benchmark a Mesh offset. Supports -m, -n, and -N.\n\n-c  Test for cycles. Supports -m, -M, -N, and -L.\n-L  Only test for large values of cycles.\n\n-t  Benchmark the delay-testing portion of the program. Supports -m, -n, -N, and -S.\n-S  Sieve depth for delay testing.\n\nFor more info, read the docs: [Coming Soon]");
+        if (!strcmp(argv[i],"-h")) printf("Help for Mesh-Collatz Searcher:\n\n-h  Prints this help command.\n-m  Minimum Mesh offset to test.\n-M  Maximum Mesh offset to test.\n-n  Minimum |n| to test.\n-N  Maximum |n| to test.\n-T  Number of threads to use on the GPU. Supported by everything.\n-B  Number of blocks to use on the GPU. Supported by everything.\n\n-b  Benchmark a Mesh offset. Supports -m, -n, and -N.\n\n-c  Test for cycles. Supports -m, -M, -N, and -L.\n-L  Only test for large values of cycles.\n\n-t  Benchmark the delay-testing portion of the program. Supports -m, -n, -N, -i, and -S.\n-s  Run the delay-testing portion of the program. Supports -m, -M, -n, -N, -i, and -f.\n\n-i  Interval for filesaving with -t and -s.\n-S  Sieve depth for delay testing.\n-f  Save to a specific file name.\n-F  Continue running a search (-s) from a file.\n\nFor more info, read the docs: [Coming Soon]");
         if (!strcmp(argv[i],"-c")) {
             executionType = "Cycle";
+            if (minTestVal == -1) minTestVal = 0;
             if (maxTestVal == -1) maxTestVal = 100000;
         }
         if (!strcmp(argv[i],"-L")) largeCyclesOnly = true;
         if (!strcmp(argv[i],"-t")) {
             executionType = "Test";
+            if (minTestVal == -1) minTestVal = 0;
             if (maxTestVal == -1) maxTestVal = 10000000000LL;
+            if (saveInterval == 1LL << 35) saveInterval = 1LL << 32;
         }
         if (!strcmp(argv[i],"-b")) {
             executionType = "Bench";
             if (minTestVal == -1) minTestVal = 1LL << 42;
             if (maxTestVal == -1) maxTestVal = minTestVal + (1LL << 26);
         }
+        if (!strcmp(argv[i],"-s")) {
+            executionType = "Search";
+            if (minTestVal == -1) minTestVal = 0;
+            if (maxTestVal == -1) maxTestVal = 1LL << 43;
+        }
+        if (!strcmp(argv[i],"-F")) {
+            executionType = "Search_File";
+            filename = argv[i+1];
+        }
+        if (!strcmp(argv[i],"-i")) saveInterval = std::stoll(argv[i+1]);
+        if (!strcmp(argv[i],"-f")) filename = argv[i+1];
         if (!strcmp(argv[i],"-m")) meshMin = std::stoi(argv[i+1]);
         if (!strcmp(argv[i],"-M")) meshMax = std::stoi(argv[i+1]);
         if (!strcmp(argv[i], "-N")) maxTestVal = std::stoll(argv[i+1]);
@@ -720,11 +955,34 @@ int main(int argc, char* argv[]) {
     if (executionType == "Test") {
         printf("No Sieve, m = %i\n", meshMin);
         meshColShortcut(minTestVal, maxTestVal, meshMin, blocks, threads);
-        printf("2^%i Sieve, m = %i\n", sieveSize, meshMin); //For now a 2^16 sieve seems the fastest. This will have to be benchmarked later for every Mesh offset
+        printf("2^%i Sieve, m = %i\n", sieveSize, meshMin);
         meshColRepeatedSteps(sieveSize, minTestVal, maxTestVal, meshMin, blocks, threads);
     }
     if (executionType == "Bench") {
         int svSize = meshColBench(meshMin, minTestVal, maxTestVal, blocks, threads);
         printf("Best Sieve Size: 2^%i", svSize);
+    }
+    if (executionType == "Search") {
+        meshColSearcher(meshMin, meshMax, minTestVal, maxTestVal, blocks, threads, saveInterval, filename, minTestVal, 0);
+    }
+    if (executionType == "Search_File") {
+        std::string line;
+        std::ifstream savefile(filename+"_checkpoint.txt");
+        std::getline(savefile, line);
+        minTestVal = std::stoll(line.substr(5));
+        std::getline(savefile, line);
+        maxTestVal = std::stoll(line.substr(5));
+        std::getline(savefile, line);
+        long long curTestVal = std::stoll(line.substr(2));
+        std::getline(savefile, line);
+        meshMin = std::stoi(line.substr(2));
+        std::getline(savefile, line);
+        meshMax = std::stoi(line.substr(5));
+        std::getline(savefile, line);
+        saveInterval = std::stoll(line.substr(13));
+        std::getline(savefile, line);
+        unsigned long long partialDelay = std::stoull(line.substr(6));
+
+        meshColSearcher(meshMin, meshMax, minTestVal, maxTestVal, blocks, threads, saveInterval, filename, curTestVal, partialDelay);
     }
 }
