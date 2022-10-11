@@ -7,6 +7,17 @@
 
 const long long two62 = 1LL << 62;
 
+//This is a debug function to monitor the available memory.
+bool showMemory = false;
+void memcheck() {
+    if (showMemory) {
+        //List mem (for debugging)
+        size_t free, total;
+        cudaMemGetInfo( &free, &total );
+        printf("Free Memory: %lld bytes\n", free);
+    }
+}
+
 //This structure is used to return both execution time and delay when running a search.
 struct CollatzResults {
     float milliseconds;
@@ -97,7 +108,7 @@ void meshColGPUCycleSearch(long long *c, long long *c_size, char *d_index, long 
  * meshOffset <int> - the Mesh offset to use
  * testLargeOnly <bool> - Whether to test only for large cycles; useful for finding large cycles
  */
-long long* meshColCycleSearch(long long* cycles, long long N, int blocks, int threads, int meshOffset, bool testLargeOnly = false) {
+long long* meshColCycleSearch(long long N, int blocks, int threads, int meshOffset, bool testLargeOnly = false) {
     cudaEvent_t start, stop; //Add CUDA events for benchmarking
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
@@ -109,7 +120,7 @@ long long* meshColCycleSearch(long long* cycles, long long N, int blocks, int th
     cudaMallocManaged(&c_size, sizeof(int)*4);
 
     char *d_index;
-    cudaMallocManaged(&d_index, sizeof(char)*blocks*threads);
+    cudaMallocManaged(&d_index, blocks*threads);
     for (int i = 0; i < blocks*threads; i++) {
         d_index[i] = 0;
     }
@@ -136,6 +147,7 @@ long long* meshColCycleSearch(long long* cycles, long long N, int blocks, int th
             newPos++;
         }
     }
+
     //Post-Processing Part 2: Clear out duplicates.
     std::sort(c, c + newPos);
     for (int i = 0; i < newPos; i++) {
@@ -151,9 +163,10 @@ long long* meshColCycleSearch(long long* cycles, long long N, int blocks, int th
         }
     }
     
-    *cycles = newPos; //the first value gives the array size
+    long long *cycles = new long long[newPos + 1];
+    cycles[0] = newPos; //the first value gives the array size
     for (int i = 0; i < newPos; i++) {
-        *(cycles + (i + 1)) = c[i];
+        cycles[i+1] = c[i];
     }
 
     float milliseconds = 0;
@@ -379,13 +392,14 @@ CollatzResults* meshColRepeatedSteps(int repeatDepth, long long minN, long long 
     cudaEventCreate(&stop);
     
     //Find the numbers that go to 1 within repeatDepth steps.
+    const int MAX_MALLOC = 16384;
     long long *cycleLeads;
-    cudaMallocManaged(&cycleLeads, sizeof(long long)*100000000);
+    cudaMallocManaged(&cycleLeads, sizeof(long long)*MAX_MALLOC);
     char *cycleLeadDelays;
-    cudaMallocManaged(&cycleLeadDelays, sizeof(char)*100000000);
+    cudaMallocManaged(&cycleLeadDelays, MAX_MALLOC);
     long long *cycleStarts;
-    cudaMallocManaged(&cycleStarts, sizeof(long long)*100000000);
-    meshColCycleSearch(cycleStarts, 100000+100000*(meshOffset > 0 ? meshOffset : -meshOffset), blocks, threads, meshOffset);
+    cudaMallocManaged(&cycleStarts, sizeof(long long)*MAX_MALLOC);
+    cycleStarts = meshColCycleSearch(100000+100000*(meshOffset > 0 ? meshOffset : -meshOffset), blocks, threads, meshOffset);
     int numCycles = cycleStarts[0];
     for (int i = 0; i < numCycles; i++) {
         cycleStarts[i] = cycleStarts[i+1];
@@ -598,8 +612,8 @@ CollatzResults* meshColShortcut(long long minN, long long maxN, int meshOffset, 
     }
 
     long long *cycleStarts;
-    cudaMallocManaged(&cycleStarts, sizeof(long long)*1048576);
-    meshColCycleSearch(cycleStarts, 100000+100000*(meshOffset > 0 ? meshOffset : -meshOffset), blocks, threads, meshOffset);
+    cudaMallocManaged(&cycleStarts, sizeof(long long)*10000);
+    cycleStarts = meshColCycleSearch(100000+100000*(meshOffset > 0 ? meshOffset : -meshOffset), blocks, threads, meshOffset);
     int numCycles = cycleStarts[0];
     for (int i = 0; i < numCycles; i++) {
         cycleStarts[i] = cycleStarts[i+1];
@@ -671,16 +685,17 @@ CollatzResults* meshColRunner(int meshOffset, int maxM, long long minN, long lon
     
     //Find the numbers that go to 1 within repeatDepth steps.
     long long *cycleLeads;
-    cudaMallocManaged(&cycleLeads, sizeof(long long)*100000000);
+    cudaMallocManaged(&cycleLeads, sizeof(long long)*2048);
     char *cycleLeadDelays;
-    cudaMallocManaged(&cycleLeadDelays, sizeof(char)*100000000);
-    long long *cycleStarts;
-    cudaMallocManaged(&cycleStarts, sizeof(long long)*100000000);
+    cudaMallocManaged(&cycleLeadDelays, 2048);
     printf("Finding cycles...\n");
-    meshColCycleSearch(cycleStarts, 100000+100000*(meshOffset > 0 ? meshOffset : -meshOffset), blocks, threads, meshOffset);
-    int numCycles = cycleStarts[0];
+    const int CYCLE_SCALE = 100000;
+    long long *cycleStarts2 = meshColCycleSearch(CYCLE_SCALE+CYCLE_SCALE*(meshOffset > 0 ? meshOffset : -meshOffset), blocks, threads, meshOffset);
+    long long *cycleStarts;
+    cudaMallocManaged(&cycleStarts, sizeof(long long)*2048);
+    int numCycles = cycleStarts2[0];
     for (int i = 0; i < numCycles; i++) {
-        cycleStarts[i] = cycleStarts[i+1];
+        cycleStarts[i] = cycleStarts2[i+1];
         cycleLeads[i] = cycleStarts[i];
     }
     long long cycleStartMin = cycleStarts[0];
@@ -809,7 +824,7 @@ CollatzResults* meshColRunner(int meshOffset, int maxM, long long minN, long lon
         cudaEventElapsedTime(&milliseconds, start, stop);
         
         colres->delay += delayTot;
-        colres->milliseconds += milliseconds;
+        colres->milliseconds += milliseconds/1000;
         //Save to file
         std::ofstream savefile(file+"_checkpoint.txt");
         savefile << "minN=" << minN << "\nmaxN=" << maxN << "\nn=" << (segmentMaxN + 1) << "\nm=" << meshOffset << "\nmaxM=" << maxM << "\nsaveInterval=" << SAVE_INTERVAL << "\ndelay=" << colres->delay;
@@ -817,10 +832,10 @@ CollatzResults* meshColRunner(int meshOffset, int maxM, long long minN, long lon
         std::ofstream partialdelayfile(file+"_partialDelaySums_"+std::to_string(meshOffset)+".txt", std::iostream::app);
         partialdelayfile << w << "," << segmentMaxN << "," << delayTot << "\n";
         partialdelayfile.close();
-        printf("Tested to n=%lld in %fms, delay = %llu for m = %i\n", segmentMaxN, milliseconds, delayTot, meshOffset);
+        printf("Tested to n=%lld in %fs, delay = %llu for m = %i\n", segmentMaxN, milliseconds/1000, delayTot, meshOffset);
     }
     
-    std::cout << "Elapsed time: " << std::to_string(colres->milliseconds) << "ms" << std::endl;
+    std::cout << "Elapsed time: " << std::to_string(colres->milliseconds) << "s" << std::endl;
     std::cout << "Tot delay: " << std::to_string(colres->delay) << std::endl;
     std::ofstream resfile(file+"_"+std::to_string(meshOffset)+".txt");
     resfile << "Delay: " << colres->delay << "\nTime: " << colres->milliseconds;
@@ -834,6 +849,7 @@ CollatzResults* meshColRunner(int meshOffset, int maxM, long long minN, long lon
     cudaFree(cycleStarts);
     cudaFree(cycleLeadBounds);
     cudaFree(cycleLeadDelays);
+
     return colres;
 }
 
@@ -853,6 +869,7 @@ CollatzResults* meshColRunner(int meshOffset, int maxM, long long minN, long lon
 void meshColSearcher(int meshMin, int meshMax, long long minN, long long maxN, int blocks, int threads, const long long SAVE_INTERVAL, std::string file, long long curN, unsigned long long partialDelay) {
     int m = meshMin;
     while (true) {
+        memcheck();
         printf("Testing m = %i...\n", m);
         meshColRunner(m, meshMax, curN, maxN, blocks, threads, SAVE_INTERVAL, file, partialDelay);
         curN = minN;
@@ -867,7 +884,7 @@ void meshColSearcher(int meshMin, int meshMax, long long minN, long long maxN, i
 
 int main(int argc, char* argv[]) {
     //Right now this just runs a benchmark of all numbers up to +/- 10B
-    printf("Mesh-Collatz Searcher v1.0.1\n");
+    printf("Mesh-Collatz Searcher v1.1.0\n");
     //Initializing some vars to be taken in by the arguments
     std::string executionType = "";
     int meshMin = 0;
@@ -881,7 +898,7 @@ int main(int argc, char* argv[]) {
     long long saveInterval = 1LL << 35;
     std::string filename = "collatz";
     for (int i = 0; i < argc; i++) { //Argument interpreter - pretty self explanatory
-        if (!strcmp(argv[i],"-h")) printf("Help for Mesh-Collatz Searcher:\n\n-h  Prints this help command.\n-m  Minimum Mesh offset to test.\n-M  Maximum Mesh offset to test.\n-n  Minimum |n| to test.\n-N  Maximum |n| to test.\n-T  Number of threads to use on the GPU. Supported by everything.\n-B  Number of blocks to use on the GPU. Supported by everything.\n\n-b  Benchmark a Mesh offset. Supports -m, -n, and -N.\n\n-c  Test for cycles. Supports -m, -M, -N, and -L.\n-L  Only test for large values of cycles.\n\n-t  Benchmark the delay-testing portion of the program. Supports -m, -n, -N, -i, and -S.\n-s  Run the delay-testing portion of the program. Supports -m, -M, -n, -N, -i, and -f.\n\n-i  Interval for filesaving with -t and -s.\n-S  Sieve depth for delay testing.\n-f  Save to a specific file name.\n-F  Continue running a search (-s) from a file.\n\nFor more info, read the docs: [Coming Soon]");
+        if (!strcmp(argv[i],"-h")) printf("Help for Mesh-Collatz Searcher:\n\n-h  Prints this help command.\n-m  Minimum Mesh offset to test.\n-M  Maximum Mesh offset to test.\n-n  Minimum |n| to test.\n-N  Maximum |n| to test.\n-T  Number of threads to use on the GPU. Supported by everything.\n-B  Number of blocks to use on the GPU. Supported by everything.\n\n-b  Benchmark a Mesh offset. Supports -m, -n, and -N.\n\n-c  Test for cycles. Supports -m, -M, -N, and -L.\n-L  Only test for large values of cycles.\n\n-t  Benchmark the delay-testing portion of the program. Supports -m, -n, -N, -i, and -S.\n-s  Run the delay-testing portion of the program. Supports -m, -M, -n, -N, -i, and -f.\n\n-i  Interval for filesaving with -t and -s.\n-S  Sieve depth for delay testing.\n-f  Save to a specific file name.\n-F  Continue running a search (-s) from a file.\n\n--showMem  Shows information about remaining free memory.");
         if (!strcmp(argv[i],"-c")) {
             executionType = "Cycle";
             if (minTestVal == -1) minTestVal = 0;
@@ -917,6 +934,7 @@ int main(int argc, char* argv[]) {
         if (!strcmp(argv[i], "-S")) sieveSize = std::stoi(argv[i+1]);
         if (!strcmp(argv[i], "-T")) threads = std::stoi(argv[i+1]);
         if (!strcmp(argv[i], "-B")) blocks = std::stoi(argv[i+1]);
+        if (!strcmp(argv[i],"--showMem")) showMemory = true;
     }
     if (executionType == "Cycle") {
         //Initializing some more variables
@@ -926,7 +944,7 @@ int main(int argc, char* argv[]) {
         int m = meshMin;
         while (true) {
             long long* results = new long long[1048576];
-            meshColCycleSearch(results, maxTestVal+maxTestVal*(m > 0 ? m : -m), blocks, threads, m, largeCyclesOnly);
+            results = meshColCycleSearch(maxTestVal+maxTestVal*(m > 0 ? m : -m), blocks, threads, m, largeCyclesOnly);
             long long numCycles = *results;
             if (numCycles > maxNumCycles) {
                 printf("\nRecord number of cycles: %lld in m = %i ", numCycles, m);
